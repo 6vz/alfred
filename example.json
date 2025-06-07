@@ -1,0 +1,12 @@
+{
+    "secret": "your-alfred-secret",
+    "method": "GET",
+    "format_as": "json",
+    "url": "https://api.ipify.org?format=json",
+    "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:139.0) Gecko/20100101 Firefox/139.0"
+    },
+    "body": {
+        "value_name": "value_content"
+    }
+}
