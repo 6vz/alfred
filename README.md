@@ -273,36 +273,3 @@ alfred/
 ├── README.md           # This file
 └── CONTRIBUTING.md     # Contribution guidelines
 ```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 👤 Author
-
-**Mateusz Baranowski**
-- GitHub: [@6vz](https://github.com/6vz)
-
-## 🙏 Acknowledgments
-
-- Built with [Quart](https://pgjones.gitlab.io/quart/) - Python ASGI web microframework
-- Uses [aiohttp](https://docs.aiohttp.org/) for async HTTP client functionality
-- Inspired by the need for secure HTTP request proxying
-
-## 🔮 Roadmap
-
-- [ ] Rate limiting
-- [ ] Request/response caching
-- [ ] WebSocket support
-- [ ] Multiple authentication methods
-- [ ] Request/response transformation
-- [ ] Metrics and monitoring dashboard
-- [ ] Kubernetes deployment manifests
-
----
-
-*Alfred - Your reliable HTTP request butler* 🤖 
