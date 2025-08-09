@@ -4,7 +4,7 @@ import logging
 from typing import Dict, Any, Optional
 
 import aiohttp
-import quart
+from multidict import CIMultiDict
 from quart import Quart, request, Response
 import quart_cors
 from dotenv import load_dotenv
@@ -34,25 +34,100 @@ async def index() -> Response:
     return Response(
         response=json.dumps({
             "project": "alfred",
-            "version": "1.0.0",
-            "description": "A secure HTTP request proxy service",
+            "version": "1.1.0",
+            "description": "A secure HTTP request proxy service (JSON wrapper + pass-through)",
             "author": "Mateusz Baranowski",
             "github": "https://github.com/6vz/alfred",
             "status": "running"
-        }), 
-        status=200, 
+        }),
+        status=200,
         content_type='application/json'
     )
 
+# -----------------------
+# NEW: True pass-through proxy
+# -----------------------
+@app.route('/proxy', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'])
+async def passthrough_proxy() -> Response:
+    """
+    Pass-through HTTP proxy that streams the raw response.
+    Usage: fetch(`${PROXY_BASE}/proxy?url=<encoded target>`, { method, headers, body })
+    Auth: Provide secret via 'X-Proxy-Secret' header or ?secret=... query param.
+    """
+    try:
+        # Validate secret presence
+        if not SECRET_KEY:
+            return _error_response("Server configuration error: SECRET not set", 500)
+
+        supplied_secret = request.headers.get('X-Proxy-Secret') or request.args.get('secret')
+        if supplied_secret != SECRET_KEY:
+            logger.warning("Unauthorized request attempt to /proxy")
+            return _error_response("Invalid secret", 401)
+
+        # Target URL
+        target_url = request.args.get('url')
+        if not target_url:
+            return _error_response("Missing 'url' query parameter", 400)
+
+        method = request.method.upper()
+
+        # Raw incoming body (supports JSON, text, binary, form-data)
+        raw_body = await request.get_data()
+
+        # Forward headers: drop hop-by-hop / forbidden / internal
+        drop_req_headers = {
+            'host', 'connection', 'content-length', 'accept-encoding',
+            'x-proxy-secret', 'origin', 'referer'
+        }
+        forward_headers = CIMultiDict(
+            (k, v) for k, v in request.headers.items()
+            if k.lower() not in drop_req_headers
+        )
+
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.request(
+                method=method,
+                url=target_url,
+                headers=forward_headers,
+                data=raw_body
+            ) as resp:
+                # Read raw bytes for streaming back
+                body_bytes = await resp.read()
+
+                # Prepare response headers back to client; strip hop-by-hop
+                drop_resp_headers = {'transfer-encoding', 'content-length', 'connection'}
+                returned_headers = [(k, v) for k, v in resp.headers.items()
+                                    if k.lower() not in drop_resp_headers]
+
+                logger.info(f"{method} {target_url} -> {resp.status}")
+                return Response(
+                    response=body_bytes,
+                    status=resp.status,
+                    headers=returned_headers
+                )
+
+    except aiohttp.ClientTimeout:
+        return _error_response("Request timeout", 504)
+    except aiohttp.ClientError as e:
+        logger.error(f"HTTP client error: {e}")
+        return _error_response(f"HTTP client error: {str(e)}", 502)
+    except Exception as e:
+        logger.exception("Unexpected proxy error")
+        return _error_response("Internal server error", 500)
+
+# -----------------------
+# Original JSON-wrapping endpoint (kept for compatibility)
+# -----------------------
 @app.route('/req', methods=['POST'])
 async def make_request() -> Response:
     """
-    Process HTTP requests through the proxy.
-    
+    Process HTTP requests through the proxy with a JSON contract.
+
     Expected JSON payload:
     {
         "secret": "your-secret-key",
-        "method": "GET|POST|PUT|DELETE|PATCH",
+        "method": "GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS",
         "url": "https://example.com/api",
         "headers": {"Header-Name": "Header-Value"},
         "body": {"key": "value"} or "raw string",
@@ -63,30 +138,30 @@ async def make_request() -> Response:
         data = await request.get_json()
         if not data:
             return _error_response("No JSON data provided", 400)
-        
+
         # Validate secret
         if not SECRET_KEY:
             return _error_response("Server configuration error: SECRET not set", 500)
-        
+
         if data.get("secret") != SECRET_KEY:
-            logger.warning("Unauthorized request attempt")
+            logger.warning("Unauthorized request attempt to /req")
             return _error_response("Invalid secret", 401)
-        
+
         # Extract and validate request parameters
-        method = data.get("method", "GET").upper()
+        method = (data.get("method") or "GET").upper()
         url = data.get("url")
         headers = data.get("headers", {})
         body = data.get("body")
         format_as = data.get("format_as", "text")
-        
+
         if not url:
             return _error_response("URL is required", 400)
-        
+
         if method not in ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]:
             return _error_response(f"Unsupported HTTP method: {method}", 400)
-        
+
         logger.info(f"Making {method} request to {url}")
-        
+
         # Make the HTTP request
         response_data = await _make_http_request(method, url, headers, body, format_as)
         return Response(
@@ -94,52 +169,53 @@ async def make_request() -> Response:
             status=200,
             content_type='application/json'
         )
-        
+
     except json.JSONDecodeError:
         return _error_response("Invalid JSON format", 400)
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         return _error_response("Internal server error", 500)
 
-async def _make_http_request(method: str, url: str, headers: Dict[str, Any], 
-                           body: Optional[Any], format_as: str) -> Dict[str, Any]:
+async def _make_http_request(method: str, url: str, headers: Dict[str, Any],
+                             body: Optional[Any], format_as: str) -> Dict[str, Any]:
     """Make HTTP request and return response data."""
     try:
         timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout
-        
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            request_kwargs = {
+            request_kwargs: Dict[str, Any] = {
                 "method": method,
                 "url": url,
                 "headers": headers
             }
-            
+
             # Handle request body
-            if body and method in ["POST", "PUT", "PATCH"]:
-                if isinstance(body, dict):
+            if body is not None and method in ["POST", "PUT", "PATCH"]:
+                if isinstance(body, (dict, list)):
                     request_kwargs["json"] = body
                 else:
+                    # Send as raw text; client should set proper Content-Type if needed
                     request_kwargs["data"] = str(body)
-            
+
             async with session.request(**request_kwargs) as response:
                 response_text = await response.text()
-                
+
                 # Format response based on requested format
-                response_body = response_text
+                response_body: Any = response_text
                 if format_as == "json":
                     try:
                         response_body = json.loads(response_text)
                     except json.JSONDecodeError:
                         logger.warning(f"Failed to parse response as JSON for {url}")
                         response_body = response_text
-                
+
                 return {
                     "status": response.status,
                     "headers": dict(response.headers),
                     "body": response_body,
                     "success": True
                 }
-                
+
     except aiohttp.ClientTimeout:
         raise Exception("Request timeout - the target server took too long to respond")
     except aiohttp.ClientError as e:
@@ -173,6 +249,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     host = os.getenv("HOST", "0.0.0.0")
     debug = os.getenv("DEBUG", "false").lower() == "true"
-    
+
     logger.info(f"Starting Alfred server on {host}:{port}")
     app.run(host=host, port=port, debug=debug)
